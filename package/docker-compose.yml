@@ -1,0 +1,119 @@
+version: '3.7'
+
+x-data-plane-network: &traefik-net default
+x-exposed-hostname:   &exposed-host ${EXPOSED_HOSTNAME}
+
+x-traefik-labels:
+  &traefik-labels
+  traefik.enable: "true"
+  traefik.docker.network: *traefik-net
+  traefik.frontend.headers.allowedHosts: *exposed-host
+
+x-logging:
+  &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "1"
+
+
+
+volumes:
+  ctfd_localstate: {}
+  mysql_localstate: {}
+  redis_localstate: {}
+
+
+networks:
+  default: {}
+
+
+services:
+  traefik:
+    image: traefik:maroilles
+    restart: always
+    networks:
+      - default
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      - type: bind
+        source: ./traefik/traefik.toml
+        target: /etc/traefik/traefik.toml
+      - type: bind
+        source: ./traefik/ssl/
+        target: /etc/traefik/ssl/
+    command: [
+      --configfile=/etc/traefik/traefik.toml
+    ]
+    logging: *default-logging
+
+
+  db:
+    image: mariadb:10.4
+    restart: on-failure
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_USER: ctfd
+      MYSQL_DATABASE: ctfd
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - type: volume
+        source: mysql_localstate
+        target: /var/lib/mysql
+    networks:
+      - default
+    command: [
+      mysqld,
+      --character-set-server=utf8mb4,
+      --collation-server=utf8mb4_unicode_ci,
+      --wait_timeout=28800,
+      --log-warnings=0
+    ]
+    logging: *default-logging
+
+
+  cache:
+    image: redis:4
+    restart: on-failure
+    networks:
+      - default
+    volumes:
+      - type: volume
+        source: redis_localstate
+        target: "/data"
+    logging: *default-logging
+
+
+  ctfd:
+    image: ctfd/ctfd
+    restart: on-failure
+    networks:
+      - default
+    volumes:
+      - type: volume
+        source: ctfd_localstate
+        target: "/data"
+      - type: bind
+        source: "./ctfd/log"
+        target: "/var/log/CTFd"
+    environment:
+      WORKERS: "1"
+      DATABASE_URL: "mysql+pymysql://ctfd:${MYSQL_PASSWORD}@db/ctfd"
+      REDIS_URL: "redis://cache:6379"
+      LOG_FOLDER: "/var/log/CTFd"
+    labels:
+      << : *traefik-labels
+      traefik.port: "8000"
+      traefik.frontend.rule: "PathPrefix:/;"
+    logging: *default-logging
